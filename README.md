@@ -20,15 +20,15 @@
 
 ### Download the Release
 
-1. Navigate to the [Releases](https://github.com/yourusername/slouch/releases) page.
+1. Navigate to the [Releases](https://github.com/Pranav435/slouch/releases) page.
 2. Download the latest version of **Slouch** as a pre-built `.exe` file.
-3. Run the `.exe` file with administrative privileges.
+3. Run the `.exe` file with administrative privileges to install Slouch to your system.
 
 ### Build From Source
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/slouch.git
+   git clone https://github.com/Pranav435/slouch.git
    cd slouch
    ```
 
@@ -42,11 +42,11 @@
    python slouch.py
    ```
 
-For building an installable `.exe`, use PyInstaller:
+For building an installable `.exe`, use the included setup.py file:
 ```bash
-pyinstaller --onefile --noconsole slouch.py
+python setup.py build
 ```
-The resulting `.exe` file will be in the `dist` directory.
+The resulting `.exe` file will be in the `build\exe` directory.
 
 ---
 
@@ -125,7 +125,7 @@ Use these logs to debug any issues or review posture monitoring activity.
 
 ## Contributions
 
-Contributions are welcome! Feel free to submit issues, feature requests, or pull requests on the [GitHub repository](https://github.com/yourusername/slouch).
+Contributions are welcome! Feel free to submit issues, feature requests, or pull requests on the [GitHub repository](https://github.com/Pranav435/slouch).
 
 ---
 
