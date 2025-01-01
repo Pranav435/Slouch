@@ -16,6 +16,39 @@
 
 ---
 
+## Implementation
+
+The Slouch algorithm involves multiple stages to ensure accurate posture detection and response. Here’s how it works:
+
+### Calibration Phase
+During calibration, the user is guided through three posture states:
+1. **Upright**: The user sits straight, and metrics like slouch ratio and ear-shoulder-hip angles are recorded.
+2. **Look Down**: The user lowers their head to mimic looking down, and metrics are captured.
+3. **Slouch**: The user deliberately slouches, and the system measures the resulting changes in metrics.
+
+These metrics are stored in a configuration file to create personalized thresholds for future posture monitoring.
+
+### Monitoring Phase
+In the monitoring phase, the algorithm uses:
+
+1. **Slouch Ratio Calculation**: The nose-to-shoulder vertical difference is normalized by shoulder width to compute the slouch ratio. Higher values indicate forward tilt or slouching.
+2. **Ear-Shoulder-Hip Angle**: The angles formed between the ear, shoulder, and hip are analyzed. Lower angles suggest leaning or hunching.
+3. **Real-Time Classification**:
+   - The slouch ratio and angles are compared against calibration thresholds to classify the posture as "Upright," "Look Down," or "Slouch."
+   - If either metric exceeds the slouch threshold, the posture is classified as "Slouch."
+
+### Response Mechanism
+- **Input Blocking**: If slouching persists for a predefined number of frames, the application blocks keyboard and mouse input.
+- **Beep Alerts**: Periodic beeps are triggered during slouching to remind the user to correct their posture.
+- **Unlocking**: Input is restored when the user sits upright for a predefined number of consecutive frames.
+
+### Emergency Unlock
+An emergency unlock feature allows the user to bypass input blocking by pressing a shortcut (Ctrl+Alt+U). This ensures usability in unexpected scenarios.
+
+The combination of these steps ensures real-time, personalized posture monitoring and correction.
+
+---
+
 ## Installation
 
 ### Download the Release
