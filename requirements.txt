@@ -23,6 +23,7 @@ packaging==24.2
 pefile==2023.2.7
 pillow==11.0.0
 protobuf==4.25.5
+psutil==6.1.1
 pycparser==2.22
 pygame==2.6.1
 pyinstaller==6.11.1

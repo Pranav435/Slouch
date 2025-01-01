@@ -15,6 +15,7 @@ import threading
 import win32event
 import win32api
 import winerror
+import psutil  # Added for process management
 
 # ===========================  RESOURCE PATH HANDLING  ===========================
 def resource_path(relative_path):
@@ -93,6 +94,51 @@ if not is_admin():
     print("Not running as admin. Attempting to relaunch as admin...")
     elevate_to_admin()
     sys.exit(0)
+
+# ===========================  WATCHDOG INTEGRATION  ===========================
+# Watchdog Configuration
+WATCHDOG_NAME = "watchdog.exe"
+WATCHDOG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), WATCHDOG_NAME)
+WATCHDOG_MUTEX_NAME = "Global\\SlouchWatchdogMutex"
+CHECK_INTERVAL = 10  # seconds between watchdog checks
+
+def is_watchdog_running():
+    """Check if the watchdog process is running."""
+    for proc in psutil.process_iter(['name']):
+        try:
+            if proc.info['name'].lower() == WATCHDOG_NAME.lower():
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+    return False
+
+def start_watchdog():
+    """Start the watchdog process."""
+    try:
+        subprocess.Popen([WATCHDOG_PATH], shell=False)
+        logging.info(f"Started watchdog: {WATCHDOG_PATH}")
+    except Exception as e:
+        logging.error(f"Failed to start watchdog: {e}")
+
+def ensure_watchdog():
+    """Ensure that the watchdog is running."""
+    if not is_watchdog_running():
+        logging.warning("Watchdog not running. Starting watchdog.")
+        start_watchdog()
+    else:
+        logging.info("Watchdog is already running.")
+
+def is_watchdog_already_running():
+    """Check if another instance of the watchdog is already running."""
+    try:
+        mutex = win32event.CreateMutex(None, False, WATCHDOG_MUTEX_NAME)
+        last_error = win32api.GetLastError()
+        if last_error == winerror.ERROR_ALREADY_EXISTS:
+            return True
+        return False
+    except Exception as e:
+        logging.error(f"Error creating watchdog mutex: {e}")
+        return False
 
 # ===========================  WINDOWS BLOCKINPUT SETUP  ===========================
 user32 = ctypes.WinDLL('user32', use_last_error=True)
@@ -649,14 +695,19 @@ def main():
     # Initialize logging
     if not os.path.exists(SLOUCH_DIR):
         os.makedirs(SLOUCH_DIR)
+    LOG_FILE = os.path.join(SLOUCH_DIR, 'slouch_log.log')
     logging.basicConfig(
-        filename=os.path.join(SLOUCH_DIR, 'slouch_log.log'),
+        filename=LOG_FILE,
         level=logging.INFO,
         format='%(asctime)s:%(levelname)s:%(message)s'
     )
     logging.info("Application started.")
 
+    # Ensure the watchdog is running
+    ensure_watchdog()
+
     print("=== Slouch Lock with 3-Phase Calibration (Upright, LookDown, Slouch) ===\n")
+    logging.info("=== Slouch Lock with 3-Phase Calibration (Upright, LookDown, Slouch) ===\n")
 
     # Attempt to load existing calibration
     profile = load_calibration()

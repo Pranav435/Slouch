@@ -3,8 +3,12 @@ import os
 from cx_Freeze import setup, Executable
 import mediapipe
 
-# Function to collect MediaPipe .tflite files
+# ===========================  MEDIA PIPE TFLITE FILES COLLECTION  ===========================
 def collect_mediapipe_tflite_files():
+    """
+    Collect all .tflite files from the mediapipe.modules directory.
+    Returns a list of tuples with (source_file, destination_folder).
+    """
     mediapipe_package_dir = os.path.dirname(mediapipe.__file__)
     mediapipe_modules_dir = os.path.join(mediapipe_package_dir, 'modules')
 
@@ -20,10 +24,10 @@ def collect_mediapipe_tflite_files():
                 tflite_files.append((full_path, dest_path))
     return tflite_files
 
-# Collect additional data files
+# ===========================  COLLECT ADDITIONAL DATA FILES  ===========================
 additional_datas = collect_mediapipe_tflite_files()
 
-# Define build options
+# ===========================  BUILD EXE OPTIONS  ===========================
 build_exe_options = {
     "packages": [
         "mediapipe",
@@ -43,24 +47,42 @@ build_exe_options = {
         "time",
         "sys",
         "os",
+        "psutil",  # Added psutil for process management
     ],
-    "includes": [],  # Removed "mediapipe.*"
-    "include_files": additional_datas,
+    "includes": [],  # Removed "mediapipe.*" as it's already included
+    "include_files": additional_datas,  # Include MediaPipe .tflite files
     "excludes": ["cv2.gapi.wip"],  # Exclude the problematic module
-    "optimize": 2,
-    "build_exe": "build/exe",  # Ensure this is different from build_base
+    "optimize": 2,  # Optimize bytecode
+    "build_exe": "build/exe",  # Output directory
 }
 
-# Base setup
+# ===========================  EXECUTABLE CONFIGURATION  ===========================
+# Define base for GUI applications to hide the console
 base = None
 if sys.platform == "win32":
     base = "Win32GUI"  # Use "Win32GUI" for GUI applications to hide the console
-    # If you need the console for debugging, set base = None or comment out the line
 
+# Define executables
+executables = [
+    Executable(
+        script="slouch.py",
+        base=base,
+        target_name="slouch.exe",
+        icon=None  # You can specify an icon file here if desired
+    ),
+    Executable(
+        script="watchdog.py",
+        base="Win32GUI",  # Hide console for watchdog
+        target_name="watchdog.exe",
+        icon=None  # You can specify an icon file here if desired
+    )
+]
+
+# ===========================  SETUP CONFIGURATION  ===========================
 setup(
-    name="slouch",
+    name="SlouchLock",
     version="1.0",
-    description="Slouch Prevention Application",
+    description="Slouch Prevention Application with Watchdog Mechanism",
     options={"build_exe": build_exe_options},
-    executables=[Executable("slouch.py", base=base)],
+    executables=executables
 )
