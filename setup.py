@@ -47,13 +47,17 @@ build_exe_options = {
         "time",
         "sys",
         "os",
-        "psutil",  # Added psutil for process management
+        "psutil",    # Added psutil for process management
+        "pynput",    # Added pynput for global hotkey listening
     ],
-    "includes": [],  # Removed "mediapipe.*" as it's already included
+    "includes": [
+        "pynput.keyboard",  # Explicitly include pynput.keyboard to ensure it's packaged
+    ],
     "include_files": additional_datas,  # Include MediaPipe .tflite files
     "excludes": ["cv2.gapi.wip"],  # Exclude the problematic module
     "optimize": 2,  # Optimize bytecode
     "build_exe": "build/exe",  # Output directory
+    "include_msvcr": True,  # Include Microsoft Visual C++ Redistributable
 }
 
 # ===========================  EXECUTABLE CONFIGURATION  ===========================
@@ -72,7 +76,7 @@ executables = [
     ),
     Executable(
         script="watchdog.py",
-        base="Win32GUI",  # Hide console for watchdog
+        base=base,  # Use the same base as slouch.exe to maintain consistency
         target_name="watchdog.exe",
         icon=None  # You can specify an icon file here if desired
     )

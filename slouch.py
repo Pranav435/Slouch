@@ -16,6 +16,7 @@ import win32event
 import win32api
 import winerror
 import psutil  # Added for process management
+from pynput import keyboard  # Added for global hotkey listening
 
 # ===========================  RESOURCE PATH HANDLING  ===========================
 def resource_path(relative_path):
@@ -53,6 +54,7 @@ def is_another_instance_running():
 
 if is_another_instance_running():
     print("Another instance of the application is already running. Exiting.")
+    logging.info("Another instance detected. Exiting application.")
     sys.exit(0)
 
 # ===========================  ADMIN CHECK & ELEVATION  ===========================
@@ -92,6 +94,7 @@ def elevate_to_admin():
 # Check admin at the very start
 if not is_admin():
     print("Not running as admin. Attempting to relaunch as admin...")
+    logging.info("Not running as admin. Attempting to relaunch with admin privileges.")
     elevate_to_admin()
     sys.exit(0)
 
@@ -268,7 +271,6 @@ def beep():
     try:
         winsound.Beep(1200, 200)
     except RuntimeError as e:
-        print(f"Beep failed: {e}")
         logging.error(f"Beep failed: {e}")
 
 # ===========================  CALIBRATION I/O  ===========================
@@ -615,7 +617,6 @@ class CalibrationWizard(wx.Frame):
 
             except Exception as e:
                 error_msg = f"Error during OnTimer processing: {e}"
-                print(error_msg)
                 logging.error(error_msg)
                 self.timer.Stop()
                 self.is_calibrating = False
@@ -685,10 +686,50 @@ class CalibrationWizard(wx.Frame):
     def EmergencyUnlock(self, event):
         logging.warning("Emergency Unlock triggered.")
         block_input(False)
-        print("==== EMERGENCY UNLOCK TRIGGERED ====")
-        wx.MessageBox("Emergency unlock activated. Input has been unblocked.", "Emergency Unlock", wx.OK | wx.ICON_WARNING)
         logging.info("Input unblocked via Emergency Unlock.")
+        wx.MessageBox("Emergency unlock activated. Input has been unblocked.", "Emergency Unlock", wx.OK | wx.ICON_WARNING)
         self.Close()
+
+# ===========================  GLOBAL HOTKEY LISTENER ===========================
+def listen_for_quit_hotkey():
+    """
+    Listens for the global hotkey Ctrl+Alt+Shift+Q to terminate both Watchdog and Slouch.
+    """
+    def on_activate_quit():
+        logging.info("Quit hotkey (Ctrl+Alt+Shift+Q) activated. Terminating applications.")
+        print("\n==== Quit Hotkey Pressed: Terminating Watchdog and Slouch ====")
+
+        # Terminate watchdog.exe first
+        for proc in psutil.process_iter(['name']):
+            try:
+                if proc.info['name'].lower() == 'watchdog.exe':
+                    proc.terminate()
+                    logging.info("Terminated watchdog.exe")
+                    print("Terminated watchdog.exe")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        # Terminate slouch.exe
+        for proc in psutil.process_iter(['name']):
+            try:
+                if proc.info['name'].lower() == 'slouch.exe':
+                    proc.terminate()
+                    logging.info("Terminated slouch.exe")
+                    print("Terminated slouch.exe")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        # Optionally, terminate the listener itself if needed
+        listener.stop()
+
+    # Define the global hotkey: Ctrl+Alt+Shift+Q
+    hotkey = '<ctrl>+<alt>+<shift>+q'
+
+    # Set up the global hotkey listener
+    with keyboard.GlobalHotKeys({
+        hotkey: on_activate_quit
+    }) as listener:
+        listener.join()
 
 # ===========================  MAIN SCRIPT  ===========================
 def main():
@@ -702,6 +743,11 @@ def main():
         format='%(asctime)s:%(levelname)s:%(message)s'
     )
     logging.info("Application started.")
+
+    # Start the global hotkey listener in a separate daemon thread
+    hotkey_thread = threading.Thread(target=listen_for_quit_hotkey, daemon=True)
+    hotkey_thread.start()
+    logging.info("Global hotkey listener started.")
 
     # Ensure the watchdog is running
     ensure_watchdog()
@@ -909,6 +955,47 @@ def main():
         block_input(False)
         cap_monitor.release()
         logging.info("Slouch Lock script ended.")
+
+# ===========================  GLOBAL HOTKEY LISTENER ===========================
+def listen_for_quit_hotkey():
+    """
+    Listens for the global hotkey Ctrl+Alt+Shift+Q to terminate both Watchdog and Slouch.
+    """
+    def on_activate_quit():
+        logging.info("Quit hotkey (Ctrl+Alt+Shift+Q) activated. Terminating applications.")
+        print("\n==== Quit Hotkey Pressed: Terminating Watchdog and Slouch ====")
+
+        # Terminate watchdog.exe first
+        for proc in psutil.process_iter(['name']):
+            try:
+                if proc.info['name'].lower() == 'watchdog.exe':
+                    proc.terminate()
+                    logging.info("Terminated watchdog.exe")
+                    print("Terminated watchdog.exe")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        # Terminate slouch.exe
+        for proc in psutil.process_iter(['name']):
+            try:
+                if proc.info['name'].lower() == 'slouch.exe':
+                    proc.terminate()
+                    logging.info("Terminated slouch.exe")
+                    print("Terminated slouch.exe")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        # Optionally, terminate the listener itself if needed
+        listener.stop()
+
+    # Define the global hotkey: Ctrl+Alt+Shift+Q
+    hotkey = '<ctrl>+<alt>+<shift>+q'
+
+    # Set up the global hotkey listener
+    with keyboard.GlobalHotKeys({
+        hotkey: on_activate_quit
+    }) as listener:
+        listener.join()
 
 if __name__ == "__main__":
     main()
