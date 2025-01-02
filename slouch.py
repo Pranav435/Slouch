@@ -15,10 +15,11 @@ import threading
 import win32event
 import win32api
 import winerror
-import psutil  # Added for process management
-from pynput import keyboard  # Added for global hotkey listening
+import psutil
+from pynput import keyboard
+from queue import Queue, Empty
 
-# ===========================  RESOURCE PATH HANDLING  ===========================
+# =========================== RESOURCE PATH HANDLING ===========================
 def resource_path(relative_path):
     """
     Get absolute path to resource, works for development and for PyInstaller.
@@ -31,7 +32,7 @@ def resource_path(relative_path):
     
     return os.path.join(base_path, relative_path)
 
-# ===========================  SINGLE INSTANCE CHECK  ===========================
+# =========================== SINGLE INSTANCE CHECK ===========================
 def is_another_instance_running():
     """
     Checks if another instance of the application is already running using a global mutex.
@@ -57,7 +58,7 @@ if is_another_instance_running():
     logging.info("Another instance detected. Exiting application.")
     sys.exit(0)
 
-# ===========================  ADMIN CHECK & ELEVATION  ===========================
+# =========================== ADMIN CHECK & ELEVATION ===========================
 def is_admin():
     """
     Returns True if the current process has admin privileges (Windows).
@@ -98,7 +99,7 @@ if not is_admin():
     elevate_to_admin()
     sys.exit(0)
 
-# ===========================  WATCHDOG INTEGRATION  ===========================
+# =========================== WATCHDOG INTEGRATION ===========================
 # Watchdog Configuration
 WATCHDOG_NAME = "watchdog.exe"
 WATCHDOG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), WATCHDOG_NAME)
@@ -131,19 +132,7 @@ def ensure_watchdog():
     else:
         logging.info("Watchdog is already running.")
 
-def is_watchdog_already_running():
-    """Check if another instance of the watchdog is already running."""
-    try:
-        mutex = win32event.CreateMutex(None, False, WATCHDOG_MUTEX_NAME)
-        last_error = win32api.GetLastError()
-        if last_error == winerror.ERROR_ALREADY_EXISTS:
-            return True
-        return False
-    except Exception as e:
-        logging.error(f"Error creating watchdog mutex: {e}")
-        return False
-
-# ===========================  WINDOWS BLOCKINPUT SETUP  ===========================
+# =========================== WINDOWS BLOCKINPUT SETUP ===========================
 user32 = ctypes.WinDLL('user32', use_last_error=True)
 
 def block_input(block: bool):
@@ -159,7 +148,7 @@ def block_input(block: bool):
         state = "Blocked" if block else "Unblocked"
         logging.info(f"Input {state} successfully.")
 
-# ===========================  CONFIG & CONSTANTS  ===========================
+# =========================== CONFIG & CONSTANTS ===========================
 # 1. Store calibration data in ProgramData folder under "Slouch" directory
 PROGRAMDATA = os.getenv('PROGRAMDATA')
 SLOUCH_DIR = os.path.join(PROGRAMDATA, 'Slouch')
@@ -193,7 +182,7 @@ RIGHT_EAR_IDX = 8
 LEFT_HIP_IDX = 23
 RIGHT_HIP_IDX = 24
 
-# ===========================  HELPER FUNCTIONS  ===========================
+# =========================== HELPER FUNCTIONS ===========================
 def compute_slouch_ratio(frame, landmarks) -> float:
     """
     Compare nose vs. shoulder midpoint, normalized by shoulder width.
@@ -273,7 +262,7 @@ def beep():
     except RuntimeError as e:
         logging.error(f"Beep failed: {e}")
 
-# ===========================  CALIBRATION I/O  ===========================
+# =========================== CALIBRATION I/O ===========================
 def load_calibration():
     """
     Loads the calibration profile from CALIBRATION_FILE.
@@ -316,7 +305,58 @@ def save_calibration(data: dict):
         print(f"Error saving calibration: {e}")
         logging.error(f"Error saving calibration: {e}")
 
-# ===========================  CALIBRATION WIZARD GUI ===========================
+# =========================== GLOBAL HOTKEY LISTENER ===========================
+def listen_for_global_hotkeys(command_queue):
+    """
+    Listens for global hotkeys:
+      - Ctrl+Alt+Shift+Q to quit
+      - Ctrl+Alt+Shift+R to recalibrate
+    """
+    def on_activate_quit():
+        logging.info("Quit hotkey (Ctrl+Alt+Shift+Q) activated. Terminating applications.")
+        print("\n==== Quit Hotkey Pressed: Terminating Watchdog and Slouch ====")
+
+        # Terminate watchdog.exe first
+        for proc in psutil.process_iter(['name']):
+            try:
+                if proc.info['name'].lower() == 'watchdog.exe':
+                    proc.terminate()
+                    logging.info("Terminated watchdog.exe")
+                    print("Terminated watchdog.exe")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        # Terminate slouch.exe
+        for proc in psutil.process_iter(['name']):
+            try:
+                if proc.info['name'].lower() == 'slouch.exe':
+                    proc.terminate()
+                    logging.info("Terminated slouch.exe")
+                    print("Terminated slouch.exe")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        # Enqueue a 'quit' command
+        command_queue.put('quit')
+
+    def on_activate_recalibrate():
+        logging.info("Recalibrate hotkey (Ctrl+Alt+Shift+R) activated. Initiating recalibration.")
+        print("\n==== Recalibrate Hotkey Pressed: Starting Calibration Wizard ====")
+        # Enqueue a 'recalibrate' command
+        command_queue.put('recalibrate')
+
+    # Define the global hotkeys
+    hotkey_quit = '<ctrl>+<alt>+<shift>+q'
+    hotkey_recalibrate = '<ctrl>+<alt>+<shift>+r'
+
+    # Set up the global hotkey listener
+    with keyboard.GlobalHotKeys({
+        hotkey_quit: on_activate_quit,
+        hotkey_recalibrate: on_activate_recalibrate
+    }) as listener:
+        listener.join()
+
+# =========================== CALIBRATION WIZARD GUI ===========================
 class CalibrationWizard(wx.Frame):
     """
     A wizard-style GUI for 3-phase calibration using WxPython.
@@ -457,8 +497,8 @@ class CalibrationWizard(wx.Frame):
         self.instruction_panel.Hide()
         self.phase_panel.Show()
 
-        # **Newly Added Line to Maximize the Window**
-        self.Maximize()  # Maximize the window to prevent blank display
+        # Maximize the window to prevent blank display
+        self.Maximize()
 
         self.Layout()               # Update the layout
         self.phase_panel.Refresh()  # Refresh the phase panel
@@ -523,8 +563,6 @@ class CalibrationWizard(wx.Frame):
                 # Process pose
                 results = self.pose_processor.process(frame_rgb)
 
-                # NOTE: Landmark drawing has been removed as per the requirement
-
                 # No landmark drawing, so frame_rgb remains unchanged
 
                 height, width = frame_rgb.shape[:2]
@@ -558,7 +596,7 @@ class CalibrationWizard(wx.Frame):
                 progress_percent = min(int((elapsed / self.current_phase_duration) * 100), 100)
                 self.progress.SetValue(progress_percent)
                 logging.info(f"Progress bar updated to {progress_percent}%.")
-                
+
                 # Collect data
                 if results.pose_landmarks:
                     ratio = compute_slouch_ratio(frame, results.pose_landmarks.landmark)
@@ -690,124 +728,42 @@ class CalibrationWizard(wx.Frame):
         wx.MessageBox("Emergency unlock activated. Input has been unblocked.", "Emergency Unlock", wx.OK | wx.ICON_WARNING)
         self.Close()
 
-# ===========================  GLOBAL HOTKEY LISTENER ===========================
-def listen_for_quit_hotkey():
+    # Method to start recalibration
+    def StartRecalibration(self):
+        logging.info("Starting recalibration process.")
+        # Reset calibration data
+        self.current_phase = -1
+        self.phase_start_time = None
+        self.ratio_vals = []
+        self.angle_vals = []
+        self.phase_complete = False
+
+        # Show the instruction panel again
+        self.phase_panel.Hide()
+        self.instruction_panel.Show()
+        self.Layout()
+        self.Refresh()
+        logging.info("Instruction panel shown for recalibration.")
+
+        # Delete existing calibration file
+        try:
+            if os.path.exists(CALIBRATION_FILE):
+                os.remove(CALIBRATION_FILE)
+                logging.info(f"Deleted calibration file: {CALIBRATION_FILE}")
+        except Exception as e:
+            print(f"Error deleting calibration file: {e}")
+            logging.error(f"Error deleting calibration file: {e}")
+            wx.MessageBox(f"An error occurred while deleting calibration data:\n{e}", "Error", wx.OK | wx.ICON_ERROR)
+
+        # Restart calibration
+        self.OnStart(None)
+
+# =========================== MONITORING LOOP ===========================
+def monitoring_loop(profile_data, stop_event):
     """
-    Listens for the global hotkey Ctrl+Alt+Shift+Q to terminate both Watchdog and Slouch.
+    Monitoring loop that continuously checks the user's posture.
+    Blocks input if slouching is detected.
     """
-    def on_activate_quit():
-        logging.info("Quit hotkey (Ctrl+Alt+Shift+Q) activated. Terminating applications.")
-        print("\n==== Quit Hotkey Pressed: Terminating Watchdog and Slouch ====")
-
-        # Terminate watchdog.exe first
-        for proc in psutil.process_iter(['name']):
-            try:
-                if proc.info['name'].lower() == 'watchdog.exe':
-                    proc.terminate()
-                    logging.info("Terminated watchdog.exe")
-                    print("Terminated watchdog.exe")
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-
-        # Terminate slouch.exe
-        for proc in psutil.process_iter(['name']):
-            try:
-                if proc.info['name'].lower() == 'slouch.exe':
-                    proc.terminate()
-                    logging.info("Terminated slouch.exe")
-                    print("Terminated slouch.exe")
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-
-        # Optionally, terminate the listener itself if needed
-        listener.stop()
-
-    # Define the global hotkey: Ctrl+Alt+Shift+Q
-    hotkey = '<ctrl>+<alt>+<shift>+q'
-
-    # Set up the global hotkey listener
-    with keyboard.GlobalHotKeys({
-        hotkey: on_activate_quit
-    }) as listener:
-        listener.join()
-
-# ===========================  MAIN SCRIPT  ===========================
-def main():
-    # Initialize logging
-    if not os.path.exists(SLOUCH_DIR):
-        os.makedirs(SLOUCH_DIR)
-    LOG_FILE = os.path.join(SLOUCH_DIR, 'slouch_log.log')
-    logging.basicConfig(
-        filename=LOG_FILE,
-        level=logging.INFO,
-        format='%(asctime)s:%(levelname)s:%(message)s'
-    )
-    logging.info("Application started.")
-
-    # Start the global hotkey listener in a separate daemon thread
-    hotkey_thread = threading.Thread(target=listen_for_quit_hotkey, daemon=True)
-    hotkey_thread.start()
-    logging.info("Global hotkey listener started.")
-
-    # Ensure the watchdog is running
-    ensure_watchdog()
-
-    print("=== Slouch Lock with 3-Phase Calibration (Upright, LookDown, Slouch) ===\n")
-    logging.info("=== Slouch Lock with 3-Phase Calibration (Upright, LookDown, Slouch) ===\n")
-
-    # Attempt to load existing calibration
-    profile = load_calibration()
-
-    if profile:
-        print("Loaded existing calibration profile:\n", profile)
-        logging.info("Loaded existing calibration profile.")
-        print("Skipping calibration phases.\n")
-    else:
-        # Initialize Wx App for Calibration Wizard
-        app = wx.App(False)
-        phases = [
-            ("Upright", PHASE_DURATION),
-            ("LookDown", PHASE_DURATION),
-            ("Slouch", PHASE_DURATION)
-        ]
-        calibration_wizard = CalibrationWizard(None, "Calibration Wizard", phases, pose)
-        app.MainLoop()
-
-        # After calibration, load the profile
-        profile = load_calibration()
-        if not profile:
-            print("Calibration failed. Exiting.")
-            logging.error("Calibration failed.")
-            return
-
-    # Prepare final data
-    # Define "ratio" zones: 
-    #   zone1 < mid(upright, lookdown) => upright
-    #   zone1 < mid(lookdown, slouch)  => look down
-    #   else => slouch
-    ratio_up_down_cut = (profile["upright_ratio"] + profile["lookdown_ratio"]) / 2.0
-    ratio_down_slouch_cut = (profile["lookdown_ratio"] + profile["slouch_ratio"]) / 2.0
-
-    # For angle, typically upright_angle > lookdown_angle > slouch_angle
-    # Define:
-    #  if angle > mid(lookdown_angle, upright_angle) => upright
-    #  if angle > mid(slouch_angle, lookdown_angle)  => look down
-    #  else => slouch
-    angle_up_down_cut = (profile["upright_angle"] + profile["lookdown_angle"]) / 2.0
-    angle_down_slouch_cut = (profile["lookdown_angle"] + profile["slouch_angle"]) / 2.0
-
-    print("Computed ratio cutoffs:")
-    print(f"  upright/lookdown => {ratio_up_down_cut:.3f}")
-    print(f"  lookdown/slouch  => {ratio_down_slouch_cut:.3f}")
-
-    print("Computed angle cutoffs:")
-    print(f"  upright/lookdown => {angle_up_down_cut:.1f}")
-    print(f"  lookdown/slouch  => {angle_down_slouch_cut:.1f}\n")
-
-    logging.info(f"Computed ratio cutoffs: upright/lookdown={ratio_up_down_cut:.3f}, lookdown/slouch={ratio_down_slouch_cut:.3f}")
-    logging.info(f"Computed angle cutoffs: upright/lookdown={angle_up_down_cut:.1f}, lookdown/slouch={angle_down_slouch_cut:.1f}")
-
-    # Monitoring
     cap_monitor = cv2.VideoCapture(0)
     if not cap_monitor.isOpened():
         print("Error: Could not open webcam for monitoring.")
@@ -833,169 +789,276 @@ def main():
     print(f"If no pose for {NO_POSE_FRAMES_FOR_SLOUCH} frames => slouch.\n")
     logging.info("Monitoring started.")
 
-    # Define a function for monitoring in a separate thread
-    def monitoring_loop(profile_data):
-        nonlocal consecutive_slouch, consecutive_upright, locked, no_pose_count
-        nonlocal last_beep_time
+    try:
+        while not stop_event.is_set():
+            ret, frame = cap_monitor.read()
+            if not ret:
+                print("Camera read failed. Exiting monitoring loop.")
+                logging.error("Camera read failed during monitoring.")
+                break
 
-        try:
-            while True:
-                ret, frame = cap_monitor.read()
-                if not ret:
-                    print("Camera read failed. Exiting.")
-                    logging.error("Camera read failed during monitoring.")
-                    break
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = pose.process(frame_rgb)
 
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = pose.process(frame_rgb)
+            # Interpret ratio_category & angle_category each as "upright", "lookdown", or "slouch"
+            ratio_cat = "upright"
+            angle_cat = "upright"
 
-                # Interpret ratio_category & angle_category each as "upright", "lookdown", or "slouch"
-                ratio_cat = "upright"
-                angle_cat = "upright"
+            # Default is no slouch
+            is_slouch = False
 
-                # Default is no slouch
-                is_slouch = False
+            if results.pose_landmarks:
+                no_pose_count = 0
+                ratio = compute_slouch_ratio(frame, results.pose_landmarks.landmark)
+                angle = compute_ear_shoulder_hip_angle(frame, results.pose_landmarks.landmark)
 
-                if results.pose_landmarks:
-                    no_pose_count = 0
-                    ratio = compute_slouch_ratio(frame, results.pose_landmarks.landmark)
-                    angle = compute_ear_shoulder_hip_angle(frame, results.pose_landmarks.landmark)
-
-                    # Categorize ratio
-                    if ratio < profile_data["upright_ratio"] + (profile_data["lookdown_ratio"] - profile_data["upright_ratio"]) / 2.0:
-                        ratio_cat = "upright"
-                    elif ratio < profile_data["lookdown_ratio"] + (profile_data["slouch_ratio"] - profile_data["lookdown_ratio"]) / 2.0:
-                        ratio_cat = "lookdown"
-                    else:
-                        ratio_cat = "slouch"
-
-                    # Categorize angle
-                    if angle is None:
-                        angle_cat = "upright"  # Fallback
-                    else:
-                        # Angles are reversed: bigger angle => more upright
-                        if angle > profile_data["upright_angle"] + (profile_data["lookdown_angle"] - profile_data["upright_angle"]) / 2.0:
-                            angle_cat = "upright"
-                        elif angle > profile_data["lookdown_angle"] + (profile_data["slouch_angle"] - profile_data["lookdown_angle"]) / 2.0:
-                            angle_cat = "lookdown"
-                        else:
-                            angle_cat = "slouch"
-
-                    # Decide final slouch if either ratio_cat == "slouch" OR angle_cat == "slouch"
-                    is_slouch = (ratio_cat == "slouch" or angle_cat == "slouch")
+                # Categorize ratio
+                if ratio < profile_data["upright_ratio"] + (profile_data["lookdown_ratio"] - profile_data["upright_ratio"]) / 2.0:
+                    ratio_cat = "upright"
+                elif ratio < profile_data["lookdown_ratio"] + (profile_data["slouch_ratio"] - profile_data["lookdown_ratio"]) / 2.0:
+                    ratio_cat = "lookdown"
                 else:
-                    # No pose => increment no_pose_count
-                    no_pose_count += 1
-                    if no_pose_count >= NO_POSE_FRAMES_FOR_SLOUCH:
-                        is_slouch = True
+                    ratio_cat = "slouch"
 
-                # Normal logic
-                if not locked:
-                    if is_slouch:
-                        consecutive_slouch += 1
-                        logging.info(f"Slouch detected: {consecutive_slouch} consecutive slouches.")
+                # Categorize angle
+                if angle is None:
+                    angle_cat = "upright"  # Fallback
+                else:
+                    # Angles are reversed: bigger angle => more upright
+                    if angle > profile_data["upright_angle"] + (profile_data["lookdown_angle"] - profile_data["upright_angle"]) / 2.0:
+                        angle_cat = "upright"
+                    elif angle > profile_data["lookdown_angle"] + (profile_data["slouch_angle"] - profile_data["lookdown_angle"]) / 2.0:
+                        angle_cat = "lookdown"
                     else:
-                        if consecutive_slouch > 0:
-                            logging.info(f"Slouch streak broken. Consecutive slouches reset from {consecutive_slouch} to 0.")
-                        consecutive_slouch = 0
+                        angle_cat = "slouch"
+
+                # Decide final slouch if either ratio_cat == "slouch" OR angle_cat == "slouch"
+                is_slouch = (ratio_cat == "slouch" or angle_cat == "slouch")
+            else:
+                # No pose => increment no_pose_count
+                no_pose_count += 1
+                if no_pose_count >= NO_POSE_FRAMES_FOR_SLOUCH:
+                    is_slouch = True
+
+            # Normal logic
+            if not locked:
+                if is_slouch:
+                    consecutive_slouch += 1
+                    logging.info(f"Slouch detected: {consecutive_slouch} consecutive slouches.")
+                else:
+                    if consecutive_slouch > 0:
+                        logging.info(f"Slouch streak broken. Consecutive slouches reset from {consecutive_slouch} to 0.")
+                    consecutive_slouch = 0
+                consecutive_upright = 0
+
+                if consecutive_slouch >= CONSEC_SLOUCH_TO_LOCK:
+                    print("==== SLOUCH DETECTED => BLOCKING INPUT ====")
+                    logging.warning("Slouch detected. Blocking input.")
+                    block_input(True)
+                    locked = True
+                    last_beep_time = time.time()
+                    consecutive_slouch = 0
+            else:
+                # Locked => beep & check upright
+                now = time.time()
+                if now - last_beep_time > BEEP_INTERVAL:
+                    beep()
+                    last_beep_time = now
+
+                if not is_slouch:
+                    consecutive_upright += 1
+                    logging.info(f"Upright detected: {consecutive_upright} consecutive uprights.")
+                else:
+                    if consecutive_upright > 0:
+                        logging.info(f"Upright streak broken. Consecutive uprights reset from {consecutive_upright} to 0.")
                     consecutive_upright = 0
 
-                    if consecutive_slouch >= CONSEC_SLOUCH_TO_LOCK:
-                        print("==== SLOUCH DETECTED => BLOCKING INPUT ====")
-                        logging.warning("Slouch detected. Blocking input.")
-                        block_input(True)
-                        locked = True
-                        last_beep_time = time.time()
-                        consecutive_slouch = 0
-                else:
-                    # Locked => beep & check upright
-                    now = time.time()
-                    if now - last_beep_time > BEEP_INTERVAL:
-                        beep()
-                        last_beep_time = now
+                if consecutive_upright >= CONSEC_UPRIGHT_TO_UNLOCK:
+                    print("==== USER SAT UPRIGHT => UNBLOCKING INPUT ====")
+                    logging.info("User returned to upright posture. Unblocking input.")
+                    block_input(False)
+                    locked = False
+                    consecutive_upright = 0
 
-                    if not is_slouch:
-                        consecutive_upright += 1
-                        logging.info(f"Upright detected: {consecutive_upright} consecutive uprights.")
-                    else:
-                        if consecutive_upright > 0:
-                            logging.info(f"Upright streak broken. Consecutive uprights reset from {consecutive_upright} to 0.")
-                        consecutive_upright = 0
+            # To prevent high CPU usage, sleep for a short duration
+            time.sleep(0.01)
 
-                    if consecutive_upright >= CONSEC_UPRIGHT_TO_UNLOCK:
-                        print("==== USER SAT UPRIGHT => UNBLOCKING INPUT ====")
-                        logging.info("User returned to upright posture. Unblocking input.")
-                        block_input(False)
-                        locked = False
-                        consecutive_upright = 0
+    except Exception as e:
+        print(f"Error in monitoring loop: {e}")
+        logging.error(f"Error in monitoring loop: {e}")
+    finally:
+        block_input(False)
+        cap_monitor.release()
+        logging.info("Monitoring loop ended.")
 
-                # To prevent high CPU usage, sleep for a short duration
-                time.sleep(0.01)
+# =========================== MAIN SCRIPT ===========================
+def main():
+    # Initialize logging
+    if not os.path.exists(SLOUCH_DIR):
+        os.makedirs(SLOUCH_DIR)
+    LOG_FILE = os.path.join(SLOUCH_DIR, 'slouch_log.log')
+    logging.basicConfig(
+        filename=LOG_FILE,
+        level=logging.INFO,
+        format='%(asctime)s:%(levelname)s:%(message)s'
+    )
+    logging.info("Application started.")
 
-        except Exception as e:
-            print(f"Error in monitoring loop: {e}")
-            logging.error(f"Error in monitoring loop: {e}")
-        finally:
-            block_input(False)
-            cap_monitor.release()
-            logging.info("Monitoring loop ended.")
+    # Start the watchdog
+    ensure_watchdog()
+
+    print("=== Slouch Lock with 3-Phase Calibration (Upright, LookDown, Slouch) ===\n")
+    logging.info("=== Slouch Lock with 3-Phase Calibration (Upright, LookDown, Slouch) ===\n")
+
+    # Create a queue for hotkey commands
+    command_queue = Queue()
+
+    # Start the global hotkey listener in a separate daemon thread
+    hotkey_thread = threading.Thread(target=listen_for_global_hotkeys, args=(command_queue,), daemon=True)
+    hotkey_thread.start()
+    logging.info("Global hotkey listener started.")
+
+    # Attempt to load existing calibration
+    profile = load_calibration()
+
+    if not profile:
+        # Initialize Wx App for Calibration Wizard
+        app = wx.App(False)
+        phases = [
+            ("Upright", PHASE_DURATION),
+            ("LookDown", PHASE_DURATION),
+            ("Slouch", PHASE_DURATION)
+        ]
+        calibration_wizard = CalibrationWizard(None, "Calibration Wizard", phases, pose)
+        app.MainLoop()
+
+        # After calibration, load the profile
+        profile = load_calibration()
+        if not profile:
+            print("Calibration failed. Exiting.")
+            logging.error("Calibration failed.")
+            return
+    else:
+        print("Loaded existing calibration profile:\n", profile)
+        logging.info("Loaded existing calibration profile.")
+        print("Skipping calibration phases.\n")
+
+    # Prepare final data
+    # Define "ratio" zones: 
+    #   zone1 < mid(upright, lookdown) => upright
+    #   zone2 < mid(lookdown, slouch)  => look down
+    #   else => slouch
+    ratio_up_down_cut = (profile["upright_ratio"] + profile["lookdown_ratio"]) / 2.0
+    ratio_down_slouch_cut = (profile["lookdown_ratio"] + profile["slouch_ratio"]) / 2.0
+
+    # For angle, typically upright_angle > lookdown_angle > slouch_angle
+    # Define:
+    #  if angle > mid(lookdown_angle, upright_angle) => upright
+    #  if angle > mid(slouch_angle, lookdown_angle)  => look down
+    #  else => slouch
+    angle_up_down_cut = (profile["upright_angle"] + profile["lookdown_angle"]) / 2.0
+    angle_down_slouch_cut = (profile["lookdown_angle"] + profile["slouch_angle"]) / 2.0
+
+    print("Computed ratio cutoffs:")
+    print(f"  upright/lookdown => {ratio_up_down_cut:.3f}")
+    print(f"  lookdown/slouch  => {ratio_down_slouch_cut:.3f}")
+
+    print("Computed angle cutoffs:")
+    print(f"  upright/lookdown => {angle_up_down_cut:.1f}")
+    print(f"  lookdown/slouch  => {angle_down_slouch_cut:.1f}\n")
+
+    logging.info(f"Computed ratio cutoffs: upright/lookdown={ratio_up_down_cut:.3f}, lookdown/slouch={ratio_down_slouch_cut:.3f}")
+    logging.info(f"Computed angle cutoffs: upright/lookdown={angle_up_down_cut:.1f}, lookdown/slouch={angle_down_slouch_cut:.1f}")
+
+    # Initialize monitoring control
+    stop_monitoring_event = threading.Event()
 
     # Start the monitoring loop in a separate thread
-    monitoring_thread = threading.Thread(target=monitoring_loop, args=(profile,), daemon=True)
+    monitoring_thread = threading.Thread(target=monitoring_loop, args=(profile, stop_monitoring_event), daemon=True)
     monitoring_thread.start()
 
-    # Keep the main thread alive to allow monitoring to continue
+    # Main loop to handle commands from hotkey listener
     try:
-        while monitoring_thread.is_alive():
-            time.sleep(1)
+        while True:
+            try:
+                command = command_queue.get(timeout=1)  # Wait for 1 second
+                if command == 'quit':
+                    print("Quitting application as per hotkey command.")
+                    logging.info("Quitting application as per hotkey command.")
+                    stop_monitoring_event.set()
+                    break
+                elif command == 'recalibrate':
+                    print("Initiating recalibration as per hotkey command.")
+                    logging.info("Initiating recalibration as per hotkey command.")
+                    # Stop monitoring
+                    stop_monitoring_event.set()
+                    monitoring_thread.join()
+
+                    # Delete calibration file
+                    try:
+                        if os.path.exists(CALIBRATION_FILE):
+                            os.remove(CALIBRATION_FILE)
+                            logging.info(f"Deleted calibration file: {CALIBRATION_FILE}")
+                            print("Deleted existing calibration data.")
+                    except Exception as e:
+                        print(f"Error deleting calibration file: {e}")
+                        logging.error(f"Error deleting calibration file: {e}")
+                        continue  # Skip recalibration if unable to delete
+
+                    # Run calibration wizard
+                    app = wx.App(False)
+                    phases = [
+                        ("Upright", PHASE_DURATION),
+                        ("LookDown", PHASE_DURATION),
+                        ("Slouch", PHASE_DURATION)
+                    ]
+                    calibration_wizard = CalibrationWizard(None, "Calibration Wizard", phases, pose)
+                    app.MainLoop()
+
+                    # After calibration, load the new profile
+                    new_profile = load_calibration()
+                    if not new_profile:
+                        print("Recalibration failed. Exiting.")
+                        logging.error("Recalibration failed.")
+                        break
+
+                    # Update profile
+                    profile = new_profile
+
+                    # Recompute cutoffs
+                    ratio_up_down_cut = (profile["upright_ratio"] + profile["lookdown_ratio"]) / 2.0
+                    ratio_down_slouch_cut = (profile["lookdown_ratio"] + profile["slouch_ratio"]) / 2.0
+                    angle_up_down_cut = (profile["upright_angle"] + profile["lookdown_angle"]) / 2.0
+                    angle_down_slouch_cut = (profile["lookdown_angle"] + profile["slouch_angle"]) / 2.0
+
+                    print("Recomputed ratio cutoffs:")
+                    print(f"  upright/lookdown => {ratio_up_down_cut:.3f}")
+                    print(f"  lookdown/slouch  => {ratio_down_slouch_cut:.3f}")
+
+                    print("Recomputed angle cutoffs:")
+                    print(f"  upright/lookdown => {angle_up_down_cut:.1f}")
+                    print(f"  lookdown/slouch  => {angle_down_slouch_cut:.1f}\n")
+
+                    logging.info(f"Recomputed ratio cutoffs: upright/lookdown={ratio_up_down_cut:.3f}, lookdown/slouch={ratio_down_slouch_cut:.3f}")
+                    logging.info(f"Recomputed angle cutoffs: upright/lookdown={angle_up_down_cut:.1f}, lookdown/slouch={angle_down_slouch_cut:.1f}")
+
+                    # Restart monitoring
+                    stop_monitoring_event.clear()
+                    monitoring_thread = threading.Thread(target=monitoring_loop, args=(profile, stop_monitoring_event), daemon=True)
+                    monitoring_thread.start()
+                    logging.info("Monitoring restarted after recalibration.")
+                    print("Recalibration completed. Monitoring resumed.")
+
+            except Empty:
+                continue  # No command received, continue looping
     except KeyboardInterrupt:
         print("Interrupted by user. Exiting.")
         logging.info("Interrupted by user.")
     finally:
+        stop_monitoring_event.set()
+        monitoring_thread.join()
         block_input(False)
-        cap_monitor.release()
         logging.info("Slouch Lock script ended.")
-
-# ===========================  GLOBAL HOTKEY LISTENER ===========================
-def listen_for_quit_hotkey():
-    """
-    Listens for the global hotkey Ctrl+Alt+Shift+Q to terminate both Watchdog and Slouch.
-    """
-    def on_activate_quit():
-        logging.info("Quit hotkey (Ctrl+Alt+Shift+Q) activated. Terminating applications.")
-        print("\n==== Quit Hotkey Pressed: Terminating Watchdog and Slouch ====")
-
-        # Terminate watchdog.exe first
-        for proc in psutil.process_iter(['name']):
-            try:
-                if proc.info['name'].lower() == 'watchdog.exe':
-                    proc.terminate()
-                    logging.info("Terminated watchdog.exe")
-                    print("Terminated watchdog.exe")
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-
-        # Terminate slouch.exe
-        for proc in psutil.process_iter(['name']):
-            try:
-                if proc.info['name'].lower() == 'slouch.exe':
-                    proc.terminate()
-                    logging.info("Terminated slouch.exe")
-                    print("Terminated slouch.exe")
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                continue
-
-        # Optionally, terminate the listener itself if needed
-        listener.stop()
-
-    # Define the global hotkey: Ctrl+Alt+Shift+Q
-    hotkey = '<ctrl>+<alt>+<shift>+q'
-
-    # Set up the global hotkey listener
-    with keyboard.GlobalHotKeys({
-        hotkey: on_activate_quit
-    }) as listener:
-        listener.join()
 
 if __name__ == "__main__":
     main()
